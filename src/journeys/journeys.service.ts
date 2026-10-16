@@ -1,5 +1,14 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
-import { JourneyHistoryResult, JourneyRecord, JourneysRepository } from './journeys.repository';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  CreateJourneyInput,
+  FinishJourneyInput,
+  JourneyConflictError,
+  JourneyHistoryResult,
+  JourneyIdempotencyConflictError,
+  JourneyNoActiveAssignmentError,
+  JourneyRecord,
+  JourneysRepository,
+} from './journeys.repository';
 import { JourneyHistoryQueryDto } from './journey-history-query.dto';
 
 export interface JourneyHistoryPage {
@@ -10,6 +19,26 @@ export interface JourneyHistoryPage {
 @Injectable()
 export class JourneysService {
   constructor(private readonly journeys: JourneysRepository) {}
+
+  async start(input: CreateJourneyInput): Promise<JourneyRecord> {
+    try {
+      return await this.journeys.start(input);
+    } catch (error) {
+      if (error instanceof JourneyNoActiveAssignmentError) throw new NotFoundException();
+      if (error instanceof JourneyConflictError || error instanceof JourneyIdempotencyConflictError) throw new ConflictException();
+      throw error;
+    }
+  }
+
+  async finish(input: FinishJourneyInput): Promise<JourneyRecord> {
+    try {
+      return await this.journeys.finish(input);
+    } catch (error) {
+      if (error instanceof JourneyNoActiveAssignmentError) throw new NotFoundException();
+      if (error instanceof JourneyConflictError || error instanceof JourneyIdempotencyConflictError) throw new ConflictException();
+      throw error;
+    }
+  }
 
   async findHistoryForUser(userId: string, query: JourneyHistoryQueryDto): Promise<JourneyHistoryPage> {
     const result = await this.journeys.findHistoryForUser(userId, query);

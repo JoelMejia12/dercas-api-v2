@@ -1,15 +1,18 @@
 import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { Request } from 'express';
 import { AuthGuard } from '../auth/auth.guard';
-import { CurrentAuth, RequirePermissions } from '../auth/auth.decorators';
+import { ApiAuthenticated, CurrentAuth, RequirePermissions } from '../auth/auth.decorators';
 import { AuthPrincipal } from '../auth/auth.types';
 import { PermissionsGuard } from '../auth/permissions.guard';
 import { CreateEmergencyDto, CreateIncidentDto, IncidentIdParamDto } from './incident.dto';
 import { IncidentHistoryQueryDto } from './incident-history-query.dto';
 import { IncidentHistoryPage, IncidentsService } from './incidents.service';
 import { IncidentRecord } from './incidents.repository';
+import { ApiItemsPaginationResponse, ApiModelResponse } from '../openapi/response.decorators';
+import { IncidentResponse } from '../openapi/domain-response.models';
 
 @Controller('incidents')
+@ApiAuthenticated('Incidents')
 @UseGuards(AuthGuard, PermissionsGuard)
 @RequirePermissions('INCIDENCIA_REPORTAR')
 export class IncidentsController {
@@ -17,6 +20,7 @@ export class IncidentsController {
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
+  @ApiModelResponse(IncidentResponse, false, HttpStatus.CREATED)
   create(
     @CurrentAuth() principal: AuthPrincipal,
     @Req() request: Request,
@@ -34,6 +38,7 @@ export class IncidentsController {
 
   @Post('emergencies')
   @HttpCode(HttpStatus.CREATED)
+  @ApiModelResponse(IncidentResponse, false, HttpStatus.CREATED)
   createEmergency(
     @CurrentAuth() principal: AuthPrincipal,
     @Req() request: Request,
@@ -47,6 +52,7 @@ export class IncidentsController {
   }
 
   @Get('me/history')
+  @ApiItemsPaginationResponse(IncidentResponse)
   getMyHistory(
     @CurrentAuth() principal: AuthPrincipal,
     @Query() query: IncidentHistoryQueryDto,
@@ -55,6 +61,7 @@ export class IncidentsController {
   }
 
   @Get(':id')
+  @ApiModelResponse(IncidentResponse)
   getById(
     @CurrentAuth() principal: AuthPrincipal,
     @Param() params: IncidentIdParamDto,

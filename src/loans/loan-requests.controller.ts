@@ -1,15 +1,18 @@
 import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Req, UseGuards } from '@nestjs/common';
 import { Request } from 'express';
 import { AuthGuard } from '../auth/auth.guard';
-import { CurrentAuth, RequirePermissions } from '../auth/auth.decorators';
+import { ApiAuthenticated, CurrentAuth, RequirePermissions } from '../auth/auth.decorators';
 import { AuthPrincipal } from '../auth/auth.types';
 import { PermissionsGuard } from '../auth/permissions.guard';
 import { CreateLoanRequestDto } from './create-loan-request.dto';
 import { LoanRequestRecord } from './loan-request.repository';
 import { LoanRequestService } from './loan-request.service';
 import { LoanIdParamDto } from './loan-id-param.dto';
+import { ApiModelResponse } from '../openapi/response.decorators';
+import { LoanRequestResponse } from '../openapi/domain-response.models';
 
 @Controller('loans')
+@ApiAuthenticated('Loans')
 @UseGuards(AuthGuard, PermissionsGuard)
 @RequirePermissions('VEHICULO_USAR_ADMINISTRATIVO')
 export class LoanRequestsController {
@@ -17,6 +20,7 @@ export class LoanRequestsController {
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
+  @ApiModelResponse(LoanRequestResponse, false, HttpStatus.CREATED)
   create(
     @CurrentAuth() principal: AuthPrincipal,
     @Body() body: CreateLoanRequestDto,
@@ -34,6 +38,7 @@ export class LoanRequestsController {
   }
 
   @Get(':id')
+  @ApiModelResponse(LoanRequestResponse)
   getById(@CurrentAuth() principal: AuthPrincipal, @Param() params: LoanIdParamDto): Promise<LoanRequestRecord> {
     return this.requests.findById(params.id, principal.userId);
   }

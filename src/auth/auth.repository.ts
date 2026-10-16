@@ -32,7 +32,7 @@ export class AuthRepository {
         `SELECT u.id FROM gacor.usuarios u CROSS JOIN gacor.dispositivos d
          WHERE u.id = $1::bigint AND d.id = $2::bigint AND u.activo = TRUE AND d.activo = TRUE
            AND u.password_hash = $3 AND d.device_token_hash = $4
-         FOR SHARE OF u, d`,
+         FOR UPDATE OF u, d`,
         [userId, deviceId, expectedPasswordHash, expectedDeviceTokenHash],
       );
       if (identity.rowCount !== 1) throw new AuthIdentityChangedError();
@@ -101,23 +101,21 @@ export class AuthRepository {
   }
 
   async findActivePrincipal(userId: string, sessionId: string, deviceId: string): Promise<readonly string[] | undefined> {
-    const session = await this.database.query(
-      `SELECT 1 FROM gacor.sesiones_dispositivo s
+    const result = await this.database.query<{ codigo: string | null }>(
+      `SELECT DISTINCT p.codigo FROM gacor.sesiones_dispositivo s
        JOIN gacor.usuarios u ON u.id = s.usuario_id JOIN gacor.dispositivos d ON d.id = s.dispositivo_id
+       LEFT JOIN gacor.usuario_rol ur ON ur.usuario_id = u.id
+       LEFT JOIN gacor.roles r ON r.id = ur.rol_id AND r.activo = TRUE
+       LEFT JOIN gacor.rol_permiso rp ON rp.rol_id = r.id
+       LEFT JOIN gacor.permisos p ON p.id = rp.permiso_id AND p.activo = TRUE
        WHERE s.id = $1::bigint AND s.usuario_id = $2::bigint AND s.dispositivo_id = $3::bigint
          AND s.estado = 'ABIERTA'::gacor.estado_sesion_dispositivo_enum AND u.activo = TRUE AND d.activo = TRUE
-         AND s.login_at > NOW() - ($4::integer * INTERVAL '1 second') LIMIT 1`,
+         AND s.login_at > NOW() - ($4::integer * INTERVAL '1 second')
+       ORDER BY p.codigo`,
       [sessionId, userId, deviceId, 2_592_000],
     );
-    if (session.rowCount !== 1) return undefined;
-    const grants = await this.database.query<{ codigo: string }>(
-      `SELECT DISTINCT p.codigo FROM gacor.usuario_rol ur
-       JOIN gacor.roles r ON r.id = ur.rol_id AND r.activo = TRUE
-       JOIN gacor.rol_permiso rp ON rp.rol_id = r.id
-       JOIN gacor.permisos p ON p.id = rp.permiso_id AND p.activo = TRUE
-       WHERE ur.usuario_id = $1::bigint ORDER BY p.codigo`, [userId],
-    );
-    return grants.rows.map((row) => row.codigo);
+    if (result.rows.length === 0) return undefined;
+    return result.rows.flatMap((row) => row.codigo === null ? [] : [row.codigo]);
   }
 }
 

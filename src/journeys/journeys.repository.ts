@@ -1,7 +1,26 @@
 import { Injectable } from '@nestjs/common';
+import { isIP } from 'node:net';
 import { DatabaseService } from '../database/database.service';
-import { assertPositiveBigintIdentifier } from '../database/postgres-values';
+import { PgQueryable } from '../database/pg-queryable';
+import { assertPositiveBigintIdentifier, assertUuid } from '../database/postgres-values';
 import { JourneyHistoryQueryDto } from './journey-history-query.dto';
+
+export interface CreateJourneyInput {
+  readonly userId: string;
+  readonly operationId: string;
+  readonly kilometers: string;
+  readonly deviceAt: string;
+  readonly observations?: string;
+  readonly auditIp: string;
+}
+
+export interface FinishJourneyInput extends CreateJourneyInput {
+  readonly journeyId: string;
+}
+
+export class JourneyNoActiveAssignmentError extends Error {}
+export class JourneyConflictError extends Error {}
+export class JourneyIdempotencyConflictError extends Error {}
 
 export interface JourneyRecord {
   readonly id: string;
@@ -70,6 +89,162 @@ export interface JourneyHistoryResult {
 @Injectable()
 export class JourneysRepository {
   constructor(private readonly database: DatabaseService) {}
+
+  async start(input: CreateJourneyInput): Promise<JourneyRecord> {
+    validateJourneyAction(input);
+    try {
+      return await this.database.transaction((tx) => this.startInTransaction(tx, input), {
+        userId: input.userId,
+        ip: input.auditIp,
+      });
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        const replay = await this.findByOperationId(input.operationId, input.userId);
+        if (replay) return reuseStartOrConflict(replay, input);
+        throw new JourneyConflictError();
+      }
+      throw error;
+    }
+  }
+
+  private async startInTransaction(tx: PgQueryable, input: CreateJourneyInput): Promise<JourneyRecord> {
+    const earlyReplay = await this.findByOperationId(input.operationId, input.userId, tx);
+    if (earlyReplay) return reuseStartOrConflict(earlyReplay, input);
+
+    const assignment = await tx.query<{ id: string; vehicle_id: string }>(
+      `SELECT a.id::text AS id, v.id::text AS vehicle_id
+       FROM gacor.asignaciones_vehiculo a
+       JOIN gacor.vehiculos v ON v.id = a.vehiculo_id
+       WHERE a.piloto_id = $1::bigint
+         AND a.estado = 'ACTIVA'::gacor.estado_asignacion_enum
+         AND v.activo = TRUE
+         AND v.tipo = 'BRIGADA'::gacor.tipo_vehiculo_enum
+       ORDER BY a.fecha_hora_inicio DESC, a.id DESC
+       LIMIT 1
+       FOR UPDATE OF a, v`, [input.userId],
+    );
+    const activeAssignment = assignment.rows[0];
+    if (!activeAssignment) throw new JourneyNoActiveAssignmentError();
+
+    // Recheck after acquiring the assignment lock so simultaneous retries observe the committed request.
+    const lockedReplay = await this.findByOperationId(input.operationId, input.userId, tx);
+    if (lockedReplay) return reuseStartOrConflict(lockedReplay, input);
+
+    const openMovement = await tx.query<{ id: string }>(
+      `SELECT id::text AS id FROM gacor.movimientos_vehiculo
+       WHERE estado = 'ABIERTO'::gacor.estado_movimiento_enum
+         AND (usuario_id = $1::bigint OR vehiculo_id = $2::bigint)
+       LIMIT 1 FOR UPDATE`, [input.userId, activeAssignment.vehicle_id],
+    );
+    if (openMovement.rows[0]) throw new JourneyConflictError();
+
+    const reading = await tx.query<{ id: string }>(
+      `INSERT INTO gacor.lecturas_odometro
+         (vehiculo_id, usuario_id, kilometraje, tipo_lectura, fecha_hora_dispositivo, uuid_operacion)
+       VALUES ($1::bigint, $2::bigint, $3::numeric, 'JORNADA_INICIO'::gacor.tipo_lectura_odometro_enum, $4::timestamptz, $5::uuid)
+       RETURNING id::text AS id`,
+      [activeAssignment.vehicle_id, input.userId, input.kilometers, new Date(input.deviceAt).toISOString(), input.operationId],
+    );
+    const movement = await tx.query<{ id: string }>(
+      `INSERT INTO gacor.movimientos_vehiculo
+         (vehiculo_id, usuario_id, tipo, estado, lectura_inicio_id, uuid_operacion)
+       VALUES ($1::bigint, $2::bigint, 'JORNADA_BRIGADA'::gacor.tipo_movimiento_enum,
+               'ABIERTO'::gacor.estado_movimiento_enum, $3::bigint, $4::uuid)
+       RETURNING id::text AS id`,
+      [activeAssignment.vehicle_id, input.userId, reading.rows[0]!.id, input.operationId],
+    );
+    const journey = await tx.query<{ id: string }>(
+      `INSERT INTO gacor.jornadas (asignacion_id, movimiento_id, estado, observaciones_inicio, uuid_operacion)
+       VALUES ($1::bigint, $2::bigint, 'ABIERTA'::gacor.estado_jornada_enum, $3, $4::uuid)
+       RETURNING id::text AS id`,
+      [activeAssignment.id, movement.rows[0]!.id, input.observations ?? null, input.operationId],
+    );
+    return this.findRecordById(journey.rows[0]!.id, input.userId, tx);
+  }
+
+  async finish(input: FinishJourneyInput): Promise<JourneyRecord> {
+    validateJourneyAction(input);
+    assertPositiveBigintIdentifier(input.journeyId, 'journeyId');
+    try {
+      return await this.database.transaction((tx) => this.finishInTransaction(tx, input), {
+        userId: input.userId,
+        ip: input.auditIp,
+      });
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        const replay = await this.findFinishByOperationId(input.operationId, input.userId);
+        if (replay?.id === input.journeyId) return reuseFinishOrConflict(replay, input);
+        throw new JourneyConflictError();
+      }
+      if (isJourneyOdometerTriggerError(error)) throw new JourneyConflictError();
+      throw error;
+    }
+  }
+
+  private async finishInTransaction(tx: PgQueryable, input: FinishJourneyInput): Promise<JourneyRecord> {
+    const journey = await this.findRecordById(input.journeyId, input.userId, tx, true);
+    const replay = await this.findFinishByOperationId(input.operationId, input.userId, tx);
+    if (replay) {
+      if (replay.id !== input.journeyId) throw new JourneyIdempotencyConflictError();
+      return reuseFinishOrConflict(replay, input);
+    }
+    if (journey.state !== 'ABIERTA' || journey.movement.state !== 'ABIERTO' || !journey.initialOdometer) {
+      throw new JourneyConflictError();
+    }
+
+    const reading = await tx.query<{ id: string }>(
+      `INSERT INTO gacor.lecturas_odometro
+         (vehiculo_id, usuario_id, kilometraje, tipo_lectura, fecha_hora_dispositivo, uuid_operacion)
+       VALUES ($1::bigint, $2::bigint, $3::numeric, 'JORNADA_FIN'::gacor.tipo_lectura_odometro_enum, $4::timestamptz, $5::uuid)
+       RETURNING id::text AS id`,
+      [journey.vehicle.id, input.userId, input.kilometers, new Date(input.deviceAt).toISOString(), input.operationId],
+    );
+    await tx.query(
+      `UPDATE gacor.movimientos_vehiculo
+       SET estado = 'FINALIZADO'::gacor.estado_movimiento_enum, lectura_fin_id = $2::bigint
+       WHERE id = $1::bigint AND usuario_id = $3::bigint
+         AND estado = 'ABIERTO'::gacor.estado_movimiento_enum`,
+      [journey.movement.id, reading.rows[0]!.id, input.userId],
+    );
+    await tx.query(
+      `UPDATE gacor.jornadas
+       SET estado = 'FINALIZADA'::gacor.estado_jornada_enum, observaciones_fin = $2
+       WHERE id = $1::bigint AND estado = 'ABIERTA'::gacor.estado_jornada_enum`,
+      [input.journeyId, input.observations ?? null],
+    );
+    return this.findRecordById(input.journeyId, input.userId, tx);
+  }
+
+  private async findByOperationId(operationId: string, userId: string, queryable: PgQueryable | DatabaseService = this.database): Promise<JourneyRecord | null> {
+    const result = await queryable.query<JourneyRow>(
+      `${SELECT_JOURNEY_FIELDS}
+       WHERE j.uuid_operacion = $1::uuid AND a.piloto_id = $2::bigint AND mv.usuario_id = $2::bigint`,
+      [operationId, userId],
+    );
+    return result.rows[0] ? mapJourney(result.rows[0]) : null;
+  }
+
+  private async findFinishByOperationId(operationId: string, userId: string, queryable: PgQueryable | DatabaseService = this.database): Promise<JourneyRecord | null> {
+    const result = await queryable.query<JourneyRow>(
+      `${SELECT_JOURNEY_FIELDS}
+       JOIN gacor.lecturas_odometro operation_reading ON operation_reading.id = mv.lectura_fin_id
+       WHERE operation_reading.uuid_operacion = $1::uuid
+         AND a.piloto_id = $2::bigint AND mv.usuario_id = $2::bigint`,
+      [operationId, userId],
+    );
+    return result.rows[0] ? mapJourney(result.rows[0]) : null;
+  }
+
+  private async findRecordById(id: string, userId: string, queryable: PgQueryable | DatabaseService, forUpdate = false): Promise<JourneyRecord> {
+    const result = await queryable.query<JourneyRow>(
+      `${SELECT_JOURNEY_FIELDS}
+       WHERE j.id = $1::bigint AND a.piloto_id = $2::bigint AND mv.usuario_id = $2::bigint
+       ${forUpdate ? 'FOR UPDATE OF j, mv' : ''}`,
+      [id, userId],
+    );
+    if (!result.rows[0]) throw new JourneyNoActiveAssignmentError();
+    return mapJourney(result.rows[0]);
+  }
 
   async findHistoryForUser(userId: string, query: JourneyHistoryQueryDto): Promise<JourneyHistoryResult> {
     assertPositiveBigintIdentifier(userId, 'userId');
@@ -156,6 +331,55 @@ function mapJourney(row: JourneyRow): JourneyRecord {
     initialOdometer: mapReading(row.initial_reading_id, row.initial_kilometers, row.initial_type, row.initial_device_at, row.initial_received_at),
     finalOdometer: mapReading(row.final_reading_id, row.final_kilometers, row.final_type, row.final_device_at, row.final_received_at),
   };
+}
+
+function validateJourneyAction(input: CreateJourneyInput): void {
+  assertPositiveBigintIdentifier(input.userId, 'userId');
+  assertUuid(input.operationId, 'operationId');
+  if (!/^\d{1,11}(?:\.\d)?$/.test(input.kilometers)) throw new TypeError('Invalid value for kilometers');
+  if (!Number.isFinite(new Date(input.deviceAt).getTime())) throw new TypeError('Invalid value for deviceAt');
+  if (isIP(input.auditIp) === 0) throw new TypeError('Invalid value for auditIp');
+  if (input.observations !== undefined && typeof input.observations !== 'string') throw new TypeError('Invalid value for observations');
+}
+
+function reuseStartOrConflict(record: JourneyRecord, input: CreateJourneyInput): JourneyRecord {
+  const same = record.assignmentId.length > 0
+    && record.initialOdometer !== null
+    && sameDecimal(record.initialOdometer.kilometers, input.kilometers)
+    && record.initialOdometer.deviceAt === new Date(input.deviceAt).toISOString()
+    && record.startObservations === (input.observations ?? null);
+  if (!same) throw new JourneyIdempotencyConflictError();
+  return record;
+}
+
+function reuseFinishOrConflict(record: JourneyRecord, input: FinishJourneyInput): JourneyRecord {
+  const same = record.finalOdometer !== null
+    && sameDecimal(record.finalOdometer.kilometers, input.kilometers)
+    && record.finalOdometer.deviceAt === new Date(input.deviceAt).toISOString()
+    && record.endObservations === (input.observations ?? null);
+  if (!same) throw new JourneyIdempotencyConflictError();
+  return record;
+}
+
+function sameDecimal(left: string, right: string): boolean {
+  return normalizeDecimal(left) === normalizeDecimal(right);
+}
+
+function normalizeDecimal(value: string): string {
+  const [whole = '0', fraction = ''] = value.split('.');
+  const normalizedWhole = whole.replace(/^0+(?=\d)/, '');
+  const normalizedFraction = fraction.replace(/0+$/, '');
+  return normalizedFraction ? `${normalizedWhole}.${normalizedFraction}` : normalizedWhole;
+}
+
+function isUniqueViolation(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && (error as { code?: unknown }).code === '23505';
+}
+
+function isJourneyOdometerTriggerError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && 'message' in error
+    && (error as { code?: unknown }).code === 'P0001'
+    && (error as { message?: unknown }).message === 'Kilometraje final menor al inicial';
 }
 
 function mapReading(

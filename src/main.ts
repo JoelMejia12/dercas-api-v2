@@ -8,7 +8,9 @@ import { AppExceptionFilter } from './common/http/app-exception.filter';
 import { RequestLoggingInterceptor } from './common/logging/request-logging.interceptor';
 import { SecureLogger } from './common/logging/secure-logger.service';
 import { requestIdMiddleware } from './common/http/request-id.middleware';
+import { noStoreMiddleware } from './common/http/no-store.middleware';
 import { validateEnvironment } from './config/environment';
+import { setupOpenApi } from './openapi/openapi';
 
 async function bootstrap(): Promise<void> {
   const environment = validateEnvironment(process.env);
@@ -18,9 +20,11 @@ async function bootstrap(): Promise<void> {
   logger.setLevel(environment.logLevel);
   app.useLogger(logger);
   app.use(requestIdMiddleware);
+  app.use(noStoreMiddleware);
   app.enableShutdownHooks();
   app.use(helmet());
   app.setGlobalPrefix('api/v1');
+  setupOpenApi(app);
   app.useGlobalPipes(
     new ValidationPipe({
       transform: true,

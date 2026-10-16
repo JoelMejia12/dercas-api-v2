@@ -87,6 +87,9 @@ export function validateEnvironment(source: NodeJS.ProcessEnv): Environment {
   if (sslMode !== 'disable' && sslMode !== 'verify-full') {
     throw new Error('Invalid environment configuration: PGSSL must be disable or verify-full');
   }
+  if (nodeEnv === 'production' && (connectionString || hasDiscreteDatabaseSetting) && sslMode !== 'verify-full') {
+    throw new Error('Invalid environment configuration: PGSSL=verify-full is required for PostgreSQL in production');
+  }
   return {
     port: port!,
     nodeEnv: nodeEnv as Environment['nodeEnv'],

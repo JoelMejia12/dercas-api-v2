@@ -11,6 +11,11 @@ describe('buildPoolConfig', () => {
     expect(config?.ssl).toEqual({ rejectUnauthorized: true });
   });
 
+  it('sets the GACOR schema search path for database connections', () => {
+const config = buildPoolConfig({ host: 'localhost', database: 'dercas_test', user: 'api', password: 'not-logged', sslMode: 'disable' });
+expect(config?.options).toBe('-c search_path=gacor,public');
+});
+
   it('sets TLS disabled explicitly so ambient PGSSLMODE cannot silently change policy', () => {
     const config = buildPoolConfig({ host: 'localhost', database: 'dercas_test', user: 'api', password: 'not-logged', sslMode: 'disable' });
     expect(config?.ssl).toBe(false);

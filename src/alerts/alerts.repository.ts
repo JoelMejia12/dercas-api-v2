@@ -33,7 +33,9 @@ export class AlertsRepository {
     const result = await this.database.query<AlertRow>(
       `${SELECT_ALERT_FIELDS}
        FROM gacor.alertas a
-       LEFT JOIN LATERAL (SELECT n.* FROM gacor.notificaciones n
+       LEFT JOIN LATERAL (SELECT n.id, n.alerta_id, n.destinatario_id, n.canal, n.estado,
+                                 n.fecha_envio, n.fecha_entrega, n.fecha_lectura, n.created_at
+         FROM gacor.notificaciones n
          WHERE n.alerta_id = a.id AND n.destinatario_id = $1::bigint
          ORDER BY n.created_at DESC, n.id DESC LIMIT 1) n ON TRUE
        WHERE (n.id IS NOT NULL OR a.usuario_id = $1::bigint OR
@@ -57,7 +59,9 @@ export class AlertsRepository {
     const result = await this.database.query<AlertRow>(
       `${SELECT_ALERT_FIELDS}
        FROM gacor.alertas a
-       LEFT JOIN LATERAL (SELECT n.* FROM gacor.notificaciones n
+       LEFT JOIN LATERAL (SELECT n.id, n.alerta_id, n.destinatario_id, n.canal, n.estado,
+                                 n.fecha_envio, n.fecha_entrega, n.fecha_lectura, n.created_at
+         FROM gacor.notificaciones n
          WHERE n.alerta_id = a.id AND n.destinatario_id = $2::bigint
          ORDER BY n.created_at DESC, n.id DESC LIMIT 1) n ON TRUE
        WHERE a.id = $1::bigint AND (n.id IS NOT NULL OR a.usuario_id = $2::bigint OR

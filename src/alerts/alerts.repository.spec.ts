@@ -18,6 +18,8 @@ describe('AlertsRepository', () => {
     await expect(repository.findForUser('8', true, dto)).resolves.toMatchObject({ items: [{ alertId: '50', type: 'PANICO' }], hasMore: false });
     const [sql, params] = query.mock.calls[0]!;
     expect(sql).toContain('n.destinatario_id = $1::bigint');
+    expect(sql).not.toContain('SELECT n.*');
+    expect(sql).toContain('SELECT n.id, n.alerta_id, n.destinatario_id, n.canal, n.estado');
     expect(sql).toContain('a.usuario_id = $1::bigint');
     expect(sql).toContain('av.piloto_id = $1::bigint');
     expect(sql).toContain("av.estado = 'ACTIVA'::gacor.estado_asignacion_enum");
@@ -31,6 +33,7 @@ describe('AlertsRepository', () => {
     await expect(repository.findByIdForUser('50', '8', false)).resolves.toBeNull();
     expect(query.mock.calls[0]![0]).toContain('a.id = $1::bigint');
     expect(query.mock.calls[0]![0]).toContain('n.destinatario_id = $2::bigint');
+    expect(query.mock.calls[0]![0]).not.toContain('SELECT n.*');
     expect(query.mock.calls[0]![1]).toEqual(['50', '8', false]);
   });
 

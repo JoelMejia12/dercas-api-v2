@@ -70,4 +70,20 @@ describe('validateEnvironment', () => {
     );
     expect(() => validateEnvironment(configured({ PGSSL: 'require' }))).toThrow('PGSSL must be disable or verify-full');
   });
+
+  it('requires certificate and hostname verification for production database connections', () => {
+    const productionConnection = {
+      NODE_ENV: 'production',
+      PGHOST: 'db.internal', PGDATABASE: 'dercas', PGUSER: 'api', PGPASSWORD: 'test-only-password',
+    };
+    expect(() => validateEnvironment(configured(productionConnection))).toThrow(
+      'PGSSL=verify-full is required for PostgreSQL in production',
+    );
+    expect(() => validateEnvironment(configured({ ...productionConnection, PGSSL: 'disable' }))).toThrow(
+      'PGSSL=verify-full is required for PostgreSQL in production',
+    );
+    expect(validateEnvironment(configured({ ...productionConnection, PGSSL: 'verify-full' })).database.sslMode)
+      .toBe('verify-full');
+    expect(validateEnvironment(configured({ NODE_ENV: 'production' })).database.sslMode).toBe('disable');
+  });
 });

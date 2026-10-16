@@ -1150,7 +1150,7 @@ END $$;
 CREATE OR REPLACE FUNCTION fn_notify_realtime() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE payload JSONB;
 BEGIN
-  payload:=jsonb_build_object('table',TG_TABLE_NAME,'operation',TG_OP,'id',CASE WHEN TG_OP='DELETE' THEN OLD.id ELSE NEW.id END,'timestamp',NOW());
+  payload:=jsonb_build_object('table',TG_TABLE_NAME,'operation',TG_OP,'id',CASE WHEN TG_OP='DELETE' THEN CASE WHEN TG_TABLE_NAME='ultima_posicion_gps' THEN OLD.dispositivo_id ELSE OLD.id END ELSE CASE WHEN TG_TABLE_NAME='ultima_posicion_gps' THEN NEW.dispositivo_id ELSE NEW.id END END,'timestamp',NOW());
   PERFORM pg_notify('gacor_realtime',payload::TEXT);
   IF TG_OP='DELETE' THEN RETURN OLD; END IF; RETURN NEW;
 END $$;

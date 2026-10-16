@@ -21,6 +21,7 @@ export function buildPoolConfig(environment: DatabaseEnvironment): PoolConfig | 
   // DATABASE_URL, pg-connection-string still applies an allowed sslmode=verify-full.
   config.ssl = environment.sslMode === 'verify-full' ? { rejectUnauthorized: true } : false;
   config.application_name = 'dercas-api';
+  config.options = '-c search_path=gacor,public';
   config.connectionTimeoutMillis = 5000;
   config.idleTimeoutMillis = 30000;
   config.max = 10;

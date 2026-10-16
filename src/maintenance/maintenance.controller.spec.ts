@@ -19,6 +19,6 @@ describe('MaintenanceController', () => {
 
   it('requires assigned-vehicle scope for reads and the maintenance creation permission for writes', () => {
     expect(Reflect.getMetadata(REQUIRED_PERMISSIONS, MaintenanceController)).toEqual(['VEHICULO_USAR_ASIGNADO']);
-    expect(Reflect.getMetadata(REQUIRED_PERMISSIONS, MaintenanceController.prototype.createOrder)).toEqual(['MANTENIMIENTO_CREAR']);
+    expect(Reflect.getMetadata(REQUIRED_PERMISSIONS, MaintenanceController.prototype.createOrder)).toEqual(['VEHICULO_USAR_ASIGNADO', 'MANTENIMIENTO_CREAR']);
   });
 });

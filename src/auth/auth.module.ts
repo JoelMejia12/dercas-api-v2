@@ -11,6 +11,6 @@ import { PermissionsGuard } from './permissions.guard';
 @Module({
   controllers: [AuthController],
   providers: [PasswordHasher, OpaqueTokenService, AccessTokenService, AuthRepository, AuthService, AuthGuard, PermissionsGuard],
-  exports: [PasswordHasher, OpaqueTokenService, AccessTokenService, AuthGuard, PermissionsGuard],
+  exports: [PasswordHasher, OpaqueTokenService, AccessTokenService, AuthRepository, AuthGuard, PermissionsGuard],
 })
 export class AuthModule {}

@@ -1,3 +1,4 @@
+
 import {
   ArgumentsHost,
   Catch,
@@ -22,15 +23,29 @@ export class AppExceptionFilter implements ExceptionFilter {
     const request = context.getRequest<SafeRequest>();
     const response = context.getResponse<Response>();
     const requestId = request.requestId ?? randomUUID();
-    const status = exception instanceof HttpException ? exception.getStatus() : HttpStatus.INTERNAL_SERVER_ERROR;
+    const status =
+      exception instanceof HttpException
+        ? exception.getStatus()
+        : HttpStatus.INTERNAL_SERVER_ERROR;
 
-    this.logger.error('HTTP request failed', {
+    // Diagnóstico temporal: registrar código y tipo sin incluir mensajes,
+    // parámetros SQL, contraseñas ni tokens.
+    const diagnostic: Record<string, string | number | boolean> = {
       requestId,
       method: request.method,
       path: request.path,
       status,
       errorType: exception instanceof Error ? exception.name : 'UnknownError',
-    });
+    };
+
+    if (typeof exception === 'object' && exception !== null && 'code' in exception) {
+      const code = (exception as { code?: unknown }).code;
+      if (typeof code === 'string' && /^[A-Z0-9_]+$/.test(code)) {
+        diagnostic['errorCode'] = code;
+      }
+    }
+
+    this.logger.error('HTTP request failed', diagnostic);
 
     response.status(status).json({
       type: 'about:blank',

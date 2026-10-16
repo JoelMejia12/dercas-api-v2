@@ -211,7 +211,8 @@ export class FuelRepository {
               lo.kilometraje::text AS odometer_kilometers, lo.fecha_hora_dispositivo AS device_at,
               cc.galones::text AS gallons, cc.precio_galon::text AS price_per_gallon, cc.total_pagado::text AS total_paid,
               cc.gasolinera_id::text AS gas_station_id, cc.latitud::text AS latitude, cc.longitud::text AS longitude,
-              cc.nombre_lugar_manual AS manual_name, cc.observaciones, lo.id::text AS odometer_id, cc.fecha_hora AS occurred_at
+              cc.nombre_lugar_manual AS manual_name, cc.observaciones AS observations,
+              lo.id::text AS odometer_id, cc.fecha_hora AS occurred_at
        FROM gacor.cargas_combustible cc JOIN gacor.movimientos_vehiculo mv ON mv.id=cc.movimiento_id
        JOIN gacor.lecturas_odometro lo ON lo.id=cc.lectura_odometro_id WHERE cc.uuid_operacion=$1::uuid`, [operationId],
     );
@@ -219,13 +220,22 @@ export class FuelRepository {
   }
 
   private reuseOrConflict(row: FuelIdempotencyRow, input: CreateFuelInput, deviceAt: Date): FuelChargeRecord {
-    const same = row.user_id === input.userId && row.movement_id === input.movementId
-      && sameDecimal(row.odometer_kilometers, input.kilometers) && toIso(row.device_at) === deviceAt.toISOString()
-      && sameDecimal(row.gallons, input.gallons) && sameDecimal(row.price_per_gallon, input.pricePerGallon)
-      && sameDecimal(row.total_paid, input.totalPaid) && row.gas_station_id === (input.gasStationId ?? null)
-      && sameNullableDecimal(row.latitude, input.latitude) && sameNullableDecimal(row.longitude, input.longitude)
-      && row.manual_name === (input.manualPlaceName ?? null) && row.observations === (input.observations ?? null);
-    if (!same) throw new FuelIdempotencyConflictError();
+    const matches = {
+      user: row.user_id === input.userId,
+      movement: row.movement_id === input.movementId,
+      odometer: sameDecimal(row.odometer_kilometers, input.kilometers),
+      deviceAt: toIso(row.device_at) === deviceAt.toISOString(),
+      gallons: sameDecimal(row.gallons, input.gallons),
+      price: sameDecimal(row.price_per_gallon, input.pricePerGallon),
+      total: sameDecimal(row.total_paid, input.totalPaid),
+      gasStation: row.gas_station_id === (input.gasStationId ?? null),
+      latitude: sameNullableDecimal(row.latitude, input.latitude),
+      longitude: sameNullableDecimal(row.longitude, input.longitude),
+      placeName: row.manual_name === (input.manualPlaceName ?? null),
+      observations: row.observations === (input.observations ?? null),
+    };
+    const mismatches = Object.entries(matches).filter(([, matchesInput]) => !matchesInput).map(([field]) => field);
+    if (mismatches.length) throw new FuelIdempotencyConflictError(`Fuel operation replay mismatch: ${mismatches.join(', ')}`);
     return { id: row.id, movementId: row.movement_id, odometerId: row.odometer_id, occurredAt: toIso(row.occurred_at) };
   }
 }
