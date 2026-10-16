@@ -453,6 +453,7 @@ describe.skipIf(!enabled)('Domain write integration (isolated PostgreSQL writes)
     let fuelId: string | undefined;
     let incidentId: string | undefined;
     let emergencyIncidentId: string | undefined;
+    let foreignIncidentId: string | undefined;
     let pilotRoleId: string | undefined;
     let pilotPermissionCodes: string[] = [];
     let pilotRolePermissionsApplied = false;
@@ -614,6 +615,7 @@ describe.skipIf(!enabled)('Domain write integration (isolated PostgreSQL writes)
         body: JSON.stringify({ operationId: randomUUID(), description: 'Unauthenticated emergency fixture' }),
       });
       expect(unauthenticatedEmergencyResponse.status).toBe(401);
+      expect((await fetch(`${baseUrl}/incidents/me/history`)).status).toBe(401);
       const unauthenticatedAdministrativeMovementChecks = await Promise.all([
         fetch(`${baseUrl}/movements/me/administrative`),
         fetch(`${baseUrl}/movements/me/administrative/open`),
@@ -714,6 +716,9 @@ describe.skipIf(!enabled)('Domain write integration (isolated PostgreSQL writes)
         body: JSON.stringify({ type: 'ACCIDENTE', description: 'Denied fixture incident', operationId: randomUUID() }),
       });
       expect(deniedIncidentReport.status).toBe(403);
+      expect((await fetch(`${baseUrl}/incidents/me/history`, {
+        headers: { authorization: `Bearer ${tokenPair.accessToken}` },
+      })).status).toBe(403);
       const deniedEmergencyOperationId = randomUUID();
       const deniedEmergencyReport = await fetch(`${baseUrl}/incidents/emergencies`, {
         method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${tokenPair.accessToken}` },
@@ -1148,6 +1153,12 @@ describe.skipIf(!enabled)('Domain write integration (isolated PostgreSQL writes)
       const foreignJourney = await foreignJourneyStartResponse.json() as { id: string; state: string; vehicle: { id: string }; movement: { id: string } };
       foreignJourneyId = foreignJourney.id;
       expect(foreignJourney).toMatchObject({ id: foreignJourneyId, state: 'ABIERTA', vehicle: { id: foreignVehicleId } });
+      const foreignIncidentResponse = await fetch(`${baseUrl}/incidents`, {
+        method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${foreignAccessToken}` },
+        body: JSON.stringify({ type: 'OTRO', description: 'Isolated foreign HTTP incident', operationId: randomUUID() }),
+      });
+      expect(foreignIncidentResponse.status).toBe(201);
+      foreignIncidentId = ((await foreignIncidentResponse.json()) as { id: string }).id;
 
       for (const path of ['/vehicles/assigned', '/assignments/me/active']) {
         const response = await fetch(`${baseUrl}${path}`, { headers: { authorization: `Bearer ${tokenPair.accessToken}` } });
@@ -1479,6 +1490,43 @@ describe.skipIf(!enabled)('Domain write integration (isolated PostgreSQL writes)
         'SELECT count(*)::text AS count FROM gacor.incidencias WHERE uuid_operacion=$1::uuid', [emergencyOperationId],
       );
       expect(emergencyOperationCount.rows[0]?.count).toBe('1');
+
+      const ownIncidentHistoryResponse = await fetch(`${baseUrl}/incidents/me/history?limit=100`, {
+        headers: { authorization: `Bearer ${tokenPair.accessToken}` },
+      });
+      expect(ownIncidentHistoryResponse.status).toBe(200);
+      const ownIncidentHistory = await ownIncidentHistoryResponse.json() as {
+        items: Array<{ id: string; type: string; vehicleId: string; movementId: string | null; description: string }>;
+        pagination: { limit: number; offset: number; hasMore: boolean };
+      };
+      expect(ownIncidentHistory.items.map(({ id }) => id)).toEqual([emergencyIncidentId, incidentId]);
+      expect(ownIncidentHistory.items.every(({ vehicleId: ownVehicleId }) => ownVehicleId === vehicleId)).toBe(true);
+      expect(ownIncidentHistory.items.some(({ id }) => id === foreignIncidentId)).toBe(false);
+      expect(ownIncidentHistory.pagination).toEqual({ limit: 100, offset: 0, hasMore: false });
+      const ownEmergencyHistoryResponse = await fetch(`${baseUrl}/incidents/me/history?type=PANICO`, {
+        headers: { authorization: `Bearer ${tokenPair.accessToken}` },
+      });
+      expect(ownEmergencyHistoryResponse.status).toBe(200);
+      expect(await ownEmergencyHistoryResponse.json()).toMatchObject({
+        items: [expect.objectContaining({ id: emergencyIncidentId, type: 'PANICO' })],
+        pagination: { limit: 25, offset: 0, hasMore: false },
+      });
+      const firstIncidentHistoryPageResponse = await fetch(`${baseUrl}/incidents/me/history?limit=1&offset=0`, {
+        headers: { authorization: `Bearer ${tokenPair.accessToken}` },
+      });
+      expect(firstIncidentHistoryPageResponse.status).toBe(200);
+      expect(await firstIncidentHistoryPageResponse.json()).toMatchObject({
+        items: [expect.objectContaining({ id: emergencyIncidentId })],
+        pagination: { limit: 1, offset: 0, hasMore: true },
+      });
+      const foreignIncidentHistoryResponse = await fetch(`${baseUrl}/incidents/me/history`, {
+        headers: { authorization: `Bearer ${foreignAccessToken}` },
+      });
+      expect(foreignIncidentHistoryResponse.status).toBe(200);
+      expect(await foreignIncidentHistoryResponse.json()).toMatchObject({
+        items: [expect.objectContaining({ id: foreignIncidentId })],
+        pagination: { limit: 25, offset: 0, hasMore: false },
+      });
       const incidentReadResponse = await fetch(`${baseUrl}/incidents/${incidentId}`, {
         headers: { authorization: `Bearer ${tokenPair.accessToken}` },
       });
@@ -1928,6 +1976,7 @@ describe.skipIf(!enabled)('Domain write integration (isolated PostgreSQL writes)
       if (fuelId) await pool.query('DELETE FROM gacor.cargas_combustible WHERE id=$1::bigint', [fuelId]);
       if (incidentId) await pool.query('DELETE FROM gacor.incidencias WHERE id=$1::bigint', [incidentId]);
       if (emergencyIncidentId) await pool.query('DELETE FROM gacor.incidencias WHERE id=$1::bigint', [emergencyIncidentId]);
+      if (foreignIncidentId) await pool.query('DELETE FROM gacor.incidencias WHERE id=$1::bigint', [foreignIncidentId]);
       if (journeyId) await pool.query('DELETE FROM gacor.jornadas WHERE id=$1::bigint', [journeyId]);
       if (secondJourneyId) await pool.query('DELETE FROM gacor.jornadas WHERE id=$1::bigint', [secondJourneyId]);
       if (foreignJourneyId) await pool.query('DELETE FROM gacor.jornadas WHERE id=$1::bigint', [foreignJourneyId]);
